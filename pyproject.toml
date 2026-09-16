@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "git-rewrite"
+version = "0.1.0"
+description = "Preview, review, and safely publish rewritten Git commit messages"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {file = "LICENSE"}
+keywords = ["git", "commit", "history", "cli"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Environment :: Console",
+    "Topic :: Software Development :: Version Control :: Git",
+]
+
+[project.scripts]
+git-rewrite = "git_rewrite.cli:cli"
+
+[tool.setuptools.packages.find]
+include = ["git_rewrite*"]
