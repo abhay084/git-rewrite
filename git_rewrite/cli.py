@@ -13,8 +13,11 @@ class Error(Exception):
 
 
 def git(repo, *args, data=None):
-    p = subprocess.run(['git', '-C', str(repo), *args], input=data,
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        p = subprocess.run(['git', '-C', str(repo), *args], input=data,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except FileNotFoundError as exc:
+        raise Error('Git was not found. Install Git and ensure it is available on PATH.') from exc
     if p.returncode:
         raise Error(p.stderr.decode('utf-8', 'replace').strip() or 'Git command failed')
     return p.stdout
@@ -54,7 +57,7 @@ def plan(repo, old, args):
     commits = text(repo, 'rev-list', '--reverse', '--topo-order', old).splitlines()
     selected = None
     if args.mode == 'single':
-        selected = text(repo, 'rev-parse', '--verify', args.commit + '^{commit}')
+        selected = text(repo, 'rev-parse', '--verify', '--end-of-options', args.commit + '^{commit}')
         if selected not in commits:
             raise Error('The selected commit is not reachable from the current branch.')
     rows, affected = [], set()
@@ -136,6 +139,7 @@ def parser():
         edit = s.add_mutually_exclusive_group(required=True)
         edit.add_argument('--replace', nargs=2, metavar=('OLD', 'NEW'), help='Literal, case-sensitive replacement')
         edit.add_argument('--remove-line', help='Remove every message line containing this literal text')
+        edit.add_argument('--message-file', type=pathlib.Path, help='Read a complete message from a UTF-8 text file')
         edit.add_argument('--message', help='Replace the entire message (all reachable commits in bulk mode)')
         s.add_argument('--apply', action='store_true', help='Ask to apply, then optionally ask to push')
         s.add_argument('--remote', default='origin', help='Remote to offer for push (default: origin)')
@@ -145,8 +149,11 @@ def parser():
 
 def main(argv=None):
     args = parser().parse_args(argv)
+    if args.message_file is not None:
+        # UTF-8 BOM and CRLF are common in Windows text editors.
+        args.message = args.message_file.expanduser().read_text(encoding='utf-8-sig')
     repo = args.repo.expanduser().resolve()
-    if args.remote.startswith('-'):
+    if not args.remote or args.remote.startswith('-'):
         raise Error('Invalid remote name.')
     if text(repo, 'rev-parse', '--is-bare-repository') == 'true':
         raise Error('Use a working clone, not a bare repository.')
@@ -182,7 +189,7 @@ def main(argv=None):
         push_url = text(repo, 'remote', 'get-url', '--push', '--all', args.remote)
         if len(push_url.splitlines()) != 1:
             raise Error('Exactly one push URL is required; use --local-only otherwise.')
-        remote_rows = text(repo, 'ls-remote', '--refs', push_url, ref).splitlines()
+        remote_rows = text(repo, 'ls-remote', '--refs', '--', push_url, ref).splitlines()
         if len(remote_rows) != 1 or remote_rows[0].split()[0] != old:
             raise Error('Remote branch must exactly match the local tip before applying. Sync the clone, or use --local-only.')
         print(f'Push destination: remote {args.remote}, branch {ref[11:]}')
@@ -211,8 +218,8 @@ def main(argv=None):
         return 0
     if text(repo, 'rev-parse', ref) != new:
         raise Error('Branch moved after validation; push cancelled.')
-    git(repo, 'push', '--force-with-lease=' + ref + ':' + old, push_url, new + ':' + ref)
-    remote_tip = text(repo, 'ls-remote', '--refs', push_url, ref).split()
+    git(repo, 'push', '--no-follow-tags', '--force-with-lease=' + ref + ':' + old, '--', push_url, new + ':' + ref)
+    remote_tip = text(repo, 'ls-remote', '--refs', '--', push_url, ref).split()
     if not remote_tip or remote_tip[0] != new:
         raise Error('Push finished but remote verification did not match; inspect the remote before retrying.')
     print('Pushed and verified on the remote.')
@@ -220,6 +227,11 @@ def main(argv=None):
 
 
 def cli():
+    # Redirected output may use a legacy Windows code page. Display escapes
+    # for unsupported characters instead of failing during review or after apply.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(errors='backslashreplace')
     try:
         sys.exit(main())
     except (Error, UnicodeError, OSError) as exc:
